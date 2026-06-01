@@ -239,8 +239,43 @@ export async function buildBundle(
         return null;
       });
 
-    const [bom, diagramResult, datamodel, failures, estimate] =
-      await Promise.all([
+    // Gemini free-tier Flash caps at 5 requests/minute; 5 parallel calls here
+    // collide with that ceiling. Serialize with 13s spacing for gemini.
+    // Other providers (Anthropic, OpenAI) have generous concurrency budgets
+    // and run in parallel as designed.
+    let bom: BoM | null;
+    let diagramResult: { mmd: string | null; error?: string } | null;
+    let datamodel: DataModel | null;
+    let failures: FailureCard[] | null;
+    let estimate: EstimatePlan | null;
+
+    if (deps.provider.name === "gemini") {
+      const sleep = (ms: number) =>
+        new Promise<void>((resolve) => setTimeout(resolve, ms));
+      const SPACING_MS = 13_000;
+      bom = await settle<BoM>("bom", generateBoM(stage4, deps));
+      await sleep(SPACING_MS);
+      diagramResult = await settle<{ mmd: string | null; error?: string }>(
+        "diagram",
+        generateDiagram(stage4, deps),
+      );
+      await sleep(SPACING_MS);
+      datamodel = await settle<DataModel>(
+        "datamodel",
+        generateDataModel(stage4, deps),
+      );
+      await sleep(SPACING_MS);
+      failures = await settle<FailureCard[]>(
+        "failures",
+        generateFailures(stage4, deps),
+      );
+      await sleep(SPACING_MS);
+      estimate = await settle<EstimatePlan>(
+        "estimate",
+        generateEstimate(stage4, deps),
+      );
+    } else {
+      [bom, diagramResult, datamodel, failures, estimate] = await Promise.all([
         settle<BoM>("bom", generateBoM(stage4, deps)),
         settle<{ mmd: string | null; error?: string }>(
           "diagram",
@@ -250,6 +285,7 @@ export async function buildBundle(
         settle<FailureCard[]>("failures", generateFailures(stage4, deps)),
         settle<EstimatePlan>("estimate", generateEstimate(stage4, deps)),
       ]);
+    }
 
     let diagramMmd: string | null = null;
     let diagramError: string | undefined;
@@ -307,47 +343,62 @@ export async function buildBundle(
         }
       }
 
-      // Run rewrites in parallel; on failure for any one, keep the original.
-      const rewrites = await Promise.all(
-        Array.from(defectsByArtifact.entries()).map(
-          async ([artifactId, defects]) => {
-            try {
-              const original =
-                artifactId === "stack"
-                  ? finalStack
-                  : artifactId === "bom"
-                    ? finalBom
-                    : artifactId === "datamodel"
-                      ? finalDatamodel
-                      : artifactId === "failures"
-                        ? finalFailures
-                        : artifactId === "estimate"
-                          ? finalEstimate
-                          : finalDiagramMmd;
-              const rewritten = await rewriteArtifact(
-                {
-                  artifactId,
-                  defects,
-                  blueprint: revisedBlueprint,
-                  pattern,
-                  patternDoc,
-                  stackJson,
-                  original,
-                },
-                deps,
-              );
-              return { artifactId, rewritten };
-            } catch (err) {
-              errors.push({
-                artifact: artifactId,
-                code: "rewrite_failed",
-                message: err instanceof Error ? err.message : String(err),
-              });
-              return null;
-            }
-          },
-        ),
-      );
+      // Run rewrites: parallel for non-Gemini providers, serialized with
+      // 13s spacing for Gemini to respect the 5-rpm Flash free-tier ceiling.
+      type Defects = NonNullable<typeof critiqueResult>["reviews"][number]["defects"];
+      const rewriteOne = async ([artifactId, defects]: [
+        ArtifactId,
+        Defects,
+      ]) => {
+        try {
+          const original =
+            artifactId === "stack"
+              ? finalStack
+              : artifactId === "bom"
+                ? finalBom
+                : artifactId === "datamodel"
+                  ? finalDatamodel
+                  : artifactId === "failures"
+                    ? finalFailures
+                    : artifactId === "estimate"
+                      ? finalEstimate
+                      : finalDiagramMmd;
+          const rewritten = await rewriteArtifact(
+            {
+              artifactId,
+              defects,
+              blueprint: revisedBlueprint,
+              pattern,
+              patternDoc,
+              stackJson,
+              original,
+            },
+            deps,
+          );
+          return { artifactId, rewritten };
+        } catch (err) {
+          errors.push({
+            artifact: artifactId,
+            code: "rewrite_failed",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          return null;
+        }
+      };
+
+      const entries = Array.from(defectsByArtifact.entries());
+      let rewrites: Array<{ artifactId: ArtifactId; rewritten: unknown } | null>;
+      if (deps.provider.name === "gemini") {
+        const sleep = (ms: number) =>
+          new Promise<void>((resolve) => setTimeout(resolve, ms));
+        rewrites = [];
+        for (let i = 0; i < entries.length; i++) {
+          if (i > 0) await sleep(13_000);
+          rewrites.push(await rewriteOne(entries[i]));
+        }
+      } else {
+        rewrites = await Promise.all(entries.map(rewriteOne));
+      }
 
       for (const r of rewrites) {
         if (!r) continue;
