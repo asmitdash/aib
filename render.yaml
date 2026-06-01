@@ -6,7 +6,7 @@ services:
     region: oregon
     branch: main
     autoDeploy: true
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    buildCommand: corepack enable && pnpm config set strict-builds false --location project && pnpm install --frozen-lockfile --ignore-scripts && pnpm build
     startCommand: pnpm start
     healthCheckPath: /
     envVars:
