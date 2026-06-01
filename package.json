@@ -42,5 +42,6 @@
     "jszip": "^3.10.1",
     "tailwindcss": "^4",
     "typescript": "^5"
-  }
+  },
+  "packageManager": "pnpm@11.5.0"
 }

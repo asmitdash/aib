@@ -8,6 +8,7 @@ allowBuilds:
 onlyBuiltDependencies:
   - '@google/genai'
   - esbuild
+  - msw
   - protobufjs
   - sharp
   - unrs-resolver
