@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: aib
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    autoDeploy: true
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    startCommand: pnpm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: PNPM_VERSION
+        value: "11.5.0"
+      - key: AIB_BUDGET_USD
+        value: "0.50"
+      - key: AIB_BUDGET_OUTPUT_TOKENS
+        value: "50000"
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: AIB_MODEL_GENERATION
+        sync: false
+      - key: AIB_MODEL_CLASSIFICATION
+        sync: false

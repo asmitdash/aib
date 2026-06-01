@@ -1,0 +1,153 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* shadcn "new-york" + Tailwind v4 token wiring.
+   Dark-mode-first per Paige. Light mode is also fully wired. */
+
+:root {
+  --radius: 0.5rem;
+
+  /* Light theme (HSL via oklch-friendly hex; we use HSL strings for shadcn parity) */
+  --background: hsl(0 0% 100%);
+  --foreground: hsl(0 0% 9%);
+  --card: hsl(0 0% 100%);
+  --card-foreground: hsl(0 0% 9%);
+  --popover: hsl(0 0% 100%);
+  --popover-foreground: hsl(0 0% 9%);
+  --primary: hsl(239 84% 67%);
+  --primary-foreground: hsl(0 0% 100%);
+  --secondary: hsl(0 0% 96%);
+  --secondary-foreground: hsl(0 0% 9%);
+  --muted: hsl(0 0% 96%);
+  --muted-foreground: hsl(0 0% 45%);
+  --accent: hsl(0 0% 96%);
+  --accent-foreground: hsl(0 0% 9%);
+  --destructive: hsl(0 72% 51%);
+  --destructive-foreground: hsl(0 0% 98%);
+  --border: hsl(0 0% 91%);
+  --input: hsl(0 0% 91%);
+  --ring: hsl(239 84% 67%);
+
+  --sidebar: hsl(0 0% 98%);
+  --sidebar-foreground: hsl(0 0% 9%);
+  --sidebar-primary: hsl(239 84% 67%);
+  --sidebar-primary-foreground: hsl(0 0% 100%);
+  --sidebar-accent: hsl(0 0% 96%);
+  --sidebar-accent-foreground: hsl(0 0% 9%);
+  --sidebar-border: hsl(0 0% 91%);
+  --sidebar-ring: hsl(239 84% 67%);
+}
+
+.dark {
+  --background: hsl(0 0% 4%);
+  --foreground: hsl(0 0% 96%);
+  --card: hsl(0 0% 6%);
+  --card-foreground: hsl(0 0% 96%);
+  --popover: hsl(0 0% 7%);
+  --popover-foreground: hsl(0 0% 96%);
+  --primary: hsl(239 84% 67%);
+  --primary-foreground: hsl(0 0% 100%);
+  --secondary: hsl(0 0% 11%);
+  --secondary-foreground: hsl(0 0% 96%);
+  --muted: hsl(0 0% 11%);
+  --muted-foreground: hsl(0 0% 64%);
+  --accent: hsl(0 0% 14%);
+  --accent-foreground: hsl(0 0% 96%);
+  --destructive: hsl(0 72% 51%);
+  --destructive-foreground: hsl(0 0% 98%);
+  --border: hsl(0 0% 14%);
+  --input: hsl(0 0% 14%);
+  --ring: hsl(239 84% 67%);
+
+  --sidebar: hsl(0 0% 6%);
+  --sidebar-foreground: hsl(0 0% 96%);
+  --sidebar-primary: hsl(239 84% 67%);
+  --sidebar-primary-foreground: hsl(0 0% 100%);
+  --sidebar-accent: hsl(0 0% 14%);
+  --sidebar-accent-foreground: hsl(0 0% 96%);
+  --sidebar-border: hsl(0 0% 14%);
+  --sidebar-ring: hsl(239 84% 67%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --background: hsl(0 0% 4%);
+    --foreground: hsl(0 0% 96%);
+    --card: hsl(0 0% 6%);
+    --card-foreground: hsl(0 0% 96%);
+    --popover: hsl(0 0% 7%);
+    --popover-foreground: hsl(0 0% 96%);
+    --primary: hsl(239 84% 67%);
+    --primary-foreground: hsl(0 0% 100%);
+    --secondary: hsl(0 0% 11%);
+    --secondary-foreground: hsl(0 0% 96%);
+    --muted: hsl(0 0% 11%);
+    --muted-foreground: hsl(0 0% 64%);
+    --accent: hsl(0 0% 14%);
+    --accent-foreground: hsl(0 0% 96%);
+    --destructive: hsl(0 72% 51%);
+    --destructive-foreground: hsl(0 0% 98%);
+    --border: hsl(0 0% 14%);
+    --input: hsl(0 0% 14%);
+    --ring: hsl(239 84% 67%);
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, "JetBrains Mono",
+    SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+}
