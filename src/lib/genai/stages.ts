@@ -1,13 +1,6 @@
 import "server-only";
 
-import {
-  HarmBlockThreshold,
-  HarmCategory,
-  type GenerateContentConfig,
-  type GenerateContentResponse,
-  type GoogleGenAI,
-  type Schema,
-} from "@google/genai";
+import type { Schema } from "@google/genai";
 import { ZodError, type ZodTypeAny, type infer as ZInfer } from "zod";
 
 import type { BudgetTracker } from "./budget";
@@ -15,6 +8,7 @@ import type { AibCaches } from "./cache";
 import type { ModelIds } from "./client";
 import { StageError } from "./errors";
 import { validateMermaid } from "./mermaid-validate";
+import type { LLMCallOpts, LLMProvider } from "./providers/types";
 import { PARSE_SYSTEM, buildParseUser } from "./prompts/parse";
 import { QUESTIONS_SYSTEM, buildQuestionsUser } from "./prompts/questions";
 import { FOLD_SYSTEM, buildFoldUser } from "./prompts/fold";
@@ -56,7 +50,7 @@ import {
 } from "./schemas/critique";
 
 export interface GenAIDeps {
-  ai: GoogleGenAI;
+  provider: LLMProvider;
   models: ModelIds;
   specHash: string;
   budget: BudgetTracker;
@@ -87,57 +81,54 @@ export interface BundleArtifactError {
   message: string;
 }
 
-const SAFETY_OFF: GenerateContentConfig["safetySettings"] = [
-  HarmCategory.HARM_CATEGORY_HARASSMENT,
-  HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-  HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-  HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-].map((category) => ({
-  category,
-  threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-}));
-
-interface CallParams {
+interface CommonCallParams {
   stage: string;
   model: string;
   systemInstruction: string;
   userText: string;
-  generationConfig: Omit<
-    GenerateContentConfig,
-    "systemInstruction" | "safetySettings"
-  >;
+  temperature: number;
+  maxOutputTokens: number;
   cachedContent?: string | null;
+  thinkingBudget?: number;
 }
 
-interface RawCallResult {
-  text: string;
-  response: GenerateContentResponse;
+interface StructuredCallParams<TZ extends ZodTypeAny> extends CommonCallParams {
+  /** Gemini-native schema (preferred for the Gemini path). */
+  geminiSchema: Schema;
+  /** Zod schema (canonical; used for validation + non-Gemini providers). */
+  zod: TZ;
 }
 
-async function rawCall(
+function toLLMOpts<T>(
   deps: GenAIDeps,
-  params: CallParams,
-): Promise<RawCallResult> {
-  const { ai, budget, signal } = deps;
-  const config: GenerateContentConfig = {
-    ...params.generationConfig,
-    abortSignal: signal,
-    safetySettings: SAFETY_OFF,
+  params: CommonCallParams,
+  responseSchema?: ZodTypeAny,
+  geminiSchema?: unknown,
+): LLMCallOpts<T> {
+  return {
+    stage: params.stage,
+    model: params.model,
+    systemPrompt: params.systemInstruction,
+    userPrompt: params.userText,
+    temperature: params.temperature,
+    maxOutputTokens: params.maxOutputTokens,
+    responseSchema,
+    geminiSchema,
+    cachedContent: params.cachedContent ?? null,
+    thinkingBudget: params.thinkingBudget,
+    signal: deps.signal,
   };
-  if (params.cachedContent) {
-    config.cachedContent = params.cachedContent;
-  } else {
-    config.systemInstruction = params.systemInstruction;
-  }
+}
 
-  let response: GenerateContentResponse;
+async function rawTextCall(
+  deps: GenAIDeps,
+  params: CommonCallParams,
+): Promise<string> {
+  let result;
   try {
-    response = await ai.models.generateContent({
-      model: params.model,
-      contents: [{ role: "user", parts: [{ text: params.userText }] }],
-      config,
-    });
+    result = await deps.provider.callText(toLLMOpts<string>(deps, params));
   } catch (err) {
+    if (err instanceof StageError) throw err;
     throw new StageError(
       params.stage,
       "api_error",
@@ -145,39 +136,38 @@ async function rawCall(
       err,
     );
   }
-
-  const usage = response.usageMetadata;
-  const cachedIn = usage?.cachedContentTokenCount ?? 0;
-  const promptIn = usage?.promptTokenCount ?? 0;
-  const freshIn = Math.max(0, promptIn - cachedIn);
-  const out =
-    (usage?.candidatesTokenCount ?? 0) + (usage?.thoughtsTokenCount ?? 0);
-
-  budget.track(params.stage, params.model, {
-    freshInputTokens: freshIn,
-    cachedInputTokens: cachedIn,
-    outputTokens: out,
+  deps.budget.track(params.stage, params.model, {
+    freshInputTokens: result.usage.inputTokens,
+    cachedInputTokens: result.usage.cachedInputTokens,
+    outputTokens: result.usage.outputTokens,
   });
+  return result.output;
+}
 
-  const text = response.text ?? "";
-  if (!text || !text.trim()) {
+async function rawJsonCall<T>(
+  deps: GenAIDeps,
+  params: StructuredCallParams<ZodTypeAny>,
+): Promise<T> {
+  let result;
+  try {
+    result = await deps.provider.callJSON<T>(
+      toLLMOpts<T>(deps, params, params.zod, params.geminiSchema),
+    );
+  } catch (err) {
+    if (err instanceof StageError) throw err;
     throw new StageError(
       params.stage,
-      "empty_response",
-      "model returned empty text",
+      "api_error",
+      err instanceof Error ? err.message : String(err),
+      err,
     );
   }
-  return { text, response };
-}
-
-function tryParseJson(text: string): unknown {
-  // Strip optional ```json fences in case the model ignored mime-type.
-  const stripped = text.trim().replace(/^```(?:json)?\s*|```$/g, "").trim();
-  return JSON.parse(stripped);
-}
-
-interface StructuredCallParams<TZ extends ZodTypeAny> extends CallParams {
-  zod: TZ;
+  deps.budget.track(params.stage, params.model, {
+    freshInputTokens: result.usage.inputTokens,
+    cachedInputTokens: result.usage.cachedInputTokens,
+    outputTokens: result.usage.outputTokens,
+  });
+  return result.output;
 }
 
 async function structuredCall<TZ extends ZodTypeAny>(
@@ -188,23 +178,14 @@ async function structuredCall<TZ extends ZodTypeAny>(
   const attempt = async (
     userText: string,
   ): Promise<{ value: ZInfer<TZ> } | { error: string }> => {
-    let text: string;
+    let raw: unknown;
     try {
-      const r = await rawCall(deps, { ...params, userText });
-      text = r.text;
+      raw = await rawJsonCall<unknown>(deps, { ...params, userText });
     } catch (err) {
       if (err instanceof StageError) return { error: err.message };
       throw err;
     }
-    let parsed: unknown;
-    try {
-      parsed = tryParseJson(text);
-    } catch (err) {
-      return {
-        error: `JSON.parse failed: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-    const result = params.zod.safeParse(parsed);
+    const result = params.zod.safeParse(raw);
     if (!result.success) {
       return {
         error: `Zod validation failed: ${formatZodError(result.error)}`,
@@ -247,13 +228,10 @@ export async function parseSpec(
       model: deps.models.MODEL_GEN,
       systemInstruction: PARSE_SYSTEM,
       userText: buildParseUser(input.wrappedSpec),
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 4000,
-        responseMimeType: "application/json",
-        responseSchema: BlueprintIRSchema as Schema,
-        thinkingConfig: { thinkingBudget: 2048 },
-      },
+      temperature: 0.2,
+      maxOutputTokens: 4000,
+      thinkingBudget: 2048,
+      geminiSchema: BlueprintIRSchema as Schema,
       zod: BlueprintZ,
     },
     (lastError) => buildParseUser(input.wrappedSpec, lastError),
@@ -275,12 +253,9 @@ export async function generateQuestions(
       systemInstruction: QUESTIONS_SYSTEM,
       userText: buildQuestionsUser(blueprintJson, input.specExcerpt),
       cachedContent: deps.caches.fastCache,
-      generationConfig: {
-        temperature: 0.4,
-        maxOutputTokens: 1500,
-        responseMimeType: "application/json",
-        responseSchema: QuestionSetSchema as Schema,
-      },
+      temperature: 0.4,
+      maxOutputTokens: 1500,
+      geminiSchema: QuestionSetSchema as Schema,
       zod: QuestionSetZ,
     },
     (lastError) =>
@@ -303,12 +278,9 @@ export async function foldAnswers(
       model: deps.models.MODEL_GEN,
       systemInstruction: FOLD_SYSTEM,
       userText: buildFoldUser(blueprintJson, qaJson),
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 4000,
-        responseMimeType: "application/json",
-        responseSchema: BlueprintIRSchema as Schema,
-      },
+      temperature: 0.2,
+      maxOutputTokens: 4000,
+      geminiSchema: BlueprintIRSchema as Schema,
       zod: BlueprintZ,
     },
     (lastError) => buildFoldUser(blueprintJson, qaJson, lastError),
@@ -331,12 +303,9 @@ export async function pickPattern(
         systemInstruction: getPatternSystem(),
         userText: buildPatternUser(blueprintJson),
         cachedContent: deps.caches.fastCache,
-        generationConfig: {
-          temperature: 0.0,
-          maxOutputTokens: 400,
-          responseMimeType: "application/json",
-          responseSchema: PatternPickSchema as Schema,
-        },
+        temperature: 0.0,
+        maxOutputTokens: 400,
+        geminiSchema: PatternPickSchema as Schema,
         zod: PatternPickZ,
       },
       (lastError) => buildPatternUser(blueprintJson, lastError),
@@ -372,12 +341,9 @@ export async function generateStack(
         input.patternDoc,
       ),
       cachedContent: deps.caches.genCache,
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 3000,
-        responseMimeType: "application/json",
-        responseSchema: StackRecSchema as Schema,
-      },
+      temperature: 0.3,
+      maxOutputTokens: 3000,
+      geminiSchema: StackRecSchema as Schema,
       zod: StackRecZ,
     },
     (lastError) =>
@@ -409,12 +375,9 @@ export async function generateBoM(
         stackJson,
       ),
       cachedContent: deps.caches.genCache,
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 2500,
-        responseMimeType: "application/json",
-        responseSchema: BoMSchema as Schema,
-      },
+      temperature: 0.3,
+      maxOutputTokens: 2500,
+      geminiSchema: BoMSchema as Schema,
       zod: BoMZ,
     },
     (lastError) =>
@@ -447,12 +410,9 @@ export async function generateDataModel(
         stackJson,
       ),
       cachedContent: deps.caches.genCache,
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 4000,
-        responseMimeType: "application/json",
-        responseSchema: DataModelSchema as Schema,
-      },
+      temperature: 0.2,
+      maxOutputTokens: 4000,
+      geminiSchema: DataModelSchema as Schema,
       zod: DataModelZ,
     },
     (lastError) =>
@@ -485,12 +445,9 @@ export async function generateFailures(
         stackJson,
       ),
       cachedContent: deps.caches.genCache,
-      generationConfig: {
-        temperature: 0.4,
-        maxOutputTokens: 3000,
-        responseMimeType: "application/json",
-        responseSchema: FailuresSchema as Schema,
-      },
+      temperature: 0.4,
+      maxOutputTokens: 3000,
+      geminiSchema: FailuresSchema as Schema,
       zod: FailuresZ,
     },
     (lastError) =>
@@ -524,12 +481,9 @@ export async function generateEstimate(
         stackJson,
       ),
       cachedContent: deps.caches.genCache,
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 3000,
-        responseMimeType: "application/json",
-        responseSchema: EstimatePlanSchema as Schema,
-      },
+      temperature: 0.3,
+      maxOutputTokens: 3000,
+      geminiSchema: EstimatePlanSchema as Schema,
       zod: EstimatePlanZ,
     },
     (lastError) =>
@@ -553,7 +507,7 @@ export async function generateDiagram(
   const stackJson = input.stackJson ?? "{}";
 
   const callOnce = async (lastError?: string): Promise<string> => {
-    const { text } = await rawCall(deps, {
+    const text = await rawTextCall(deps, {
       stage: "4.3.diagram",
       model: deps.models.MODEL_GEN,
       systemInstruction: DIAGRAM_SYSTEM,
@@ -565,13 +519,9 @@ export async function generateDiagram(
         lastError,
       ),
       cachedContent: deps.caches.genCache,
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 2000,
-        responseMimeType: "text/plain",
-      },
+      temperature: 0.2,
+      maxOutputTokens: 2000,
     });
-    // Strip fences if present.
     return text
       .trim()
       .replace(/^```(?:mermaid)?\s*/i, "")
@@ -617,12 +567,9 @@ export async function critique(
       model: deps.models.MODEL_CRITIC,
       systemInstruction: CRITIQUE_SYSTEM,
       userText: buildCritiqueUser(blueprintJson, bundleJson),
-      generationConfig: {
-        temperature: 0.4,
-        maxOutputTokens: 3000,
-        responseMimeType: "application/json",
-        responseSchema: CritiqueSchema as Schema,
-      },
+      temperature: 0.4,
+      maxOutputTokens: 3000,
+      geminiSchema: CritiqueSchema as Schema,
       zod: CritiqueZ,
     },
     (lastError) => buildCritiqueUser(blueprintJson, bundleJson, lastError),
@@ -659,12 +606,9 @@ export async function rewriteArtifact(
           model: deps.models.MODEL_CRITIC,
           systemInstruction: STACK_SYSTEM,
           userText,
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 3000,
-            responseMimeType: "application/json",
-            responseSchema: StackRecSchema as Schema,
-          },
+          temperature: 0.3,
+          maxOutputTokens: 3000,
+          geminiSchema: StackRecSchema as Schema,
           zod: StackRecZ,
         },
         (lastError) =>
@@ -691,12 +635,9 @@ export async function rewriteArtifact(
           model: deps.models.MODEL_CRITIC,
           systemInstruction: BOM_SYSTEM,
           userText,
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 2500,
-            responseMimeType: "application/json",
-            responseSchema: BoMSchema as Schema,
-          },
+          temperature: 0.3,
+          maxOutputTokens: 2500,
+          geminiSchema: BoMSchema as Schema,
           zod: BoMZ,
         },
         (lastError) =>
@@ -724,12 +665,9 @@ export async function rewriteArtifact(
           model: deps.models.MODEL_CRITIC,
           systemInstruction: DATAMODEL_SYSTEM,
           userText,
-          generationConfig: {
-            temperature: 0.2,
-            maxOutputTokens: 4000,
-            responseMimeType: "application/json",
-            responseSchema: DataModelSchema as Schema,
-          },
+          temperature: 0.2,
+          maxOutputTokens: 4000,
+          geminiSchema: DataModelSchema as Schema,
           zod: DataModelZ,
         },
         (lastError) =>
@@ -757,12 +695,9 @@ export async function rewriteArtifact(
           model: deps.models.MODEL_CRITIC,
           systemInstruction: FAILURES_SYSTEM,
           userText,
-          generationConfig: {
-            temperature: 0.4,
-            maxOutputTokens: 3000,
-            responseMimeType: "application/json",
-            responseSchema: FailuresSchema as Schema,
-          },
+          temperature: 0.4,
+          maxOutputTokens: 3000,
+          geminiSchema: FailuresSchema as Schema,
           zod: FailuresZ,
         },
         (lastError) =>
@@ -791,12 +726,9 @@ export async function rewriteArtifact(
           model: deps.models.MODEL_CRITIC,
           systemInstruction: ESTIMATE_SYSTEM,
           userText,
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 3000,
-            responseMimeType: "application/json",
-            responseSchema: EstimatePlanSchema as Schema,
-          },
+          temperature: 0.3,
+          maxOutputTokens: 3000,
+          geminiSchema: EstimatePlanSchema as Schema,
           zod: EstimatePlanZ,
         },
         (lastError) =>
@@ -810,8 +742,6 @@ export async function rewriteArtifact(
       );
     }
     case "diagram": {
-      // Diagram is plain Mermaid; rewrite via the generateDiagram path with
-      // defects appended to the user prompt.
       const stage4: Stage4Input = {
         blueprint: input.blueprint,
         pattern: input.pattern,

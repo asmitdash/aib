@@ -1,21 +1,5 @@
 import "server-only";
 
-import { GoogleGenAI } from "@google/genai";
-
-let _client: GoogleGenAI | null = null;
-
-export function getGenAI(): GoogleGenAI {
-  if (_client) return _client;
-  const apiKey = process.env.GOOGLE_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      "[aib] GOOGLE_API_KEY is not set. Refusing to start. Set it in Vercel project env (production + preview) or .env.local for dev.",
-    );
-  }
-  _client = new GoogleGenAI({ apiKey });
-  return _client;
-}
-
 export interface ModelIds {
   MODEL_GEN: string;
   MODEL_FAST: string;

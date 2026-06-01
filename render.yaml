@@ -18,7 +18,13 @@ services:
         value: "0.50"
       - key: AIB_BUDGET_OUTPUT_TOKENS
         value: "50000"
+      - key: AIB_LLM_PROVIDER
+        sync: false
       - key: GOOGLE_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
         sync: false
       - key: AIB_MODEL_GENERATION
         sync: false

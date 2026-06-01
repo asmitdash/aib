@@ -1,7 +1,8 @@
 import "server-only";
 
 import { ensureCaches } from "./cache";
-import { getGenAI, getModelIds } from "./client";
+import { getModelIds } from "./client";
+import { getProvider } from "./providers/factory";
 import { BudgetTracker, readBudgetCapsFromEnv } from "./budget";
 import {
   BudgetExceededError,
@@ -134,19 +135,20 @@ export async function buildBundle(
     const cleanedSpec = wrap.cleaned;
 
     // ---- Setup deps ----
-    const ai = getGenAI();
+    const provider = getProvider();
     const models = getModelIds();
     const caps = readBudgetCapsFromEnv();
     const budget = new BudgetTracker(caps);
 
     // Kick off cache creation in parallel with Stage 1 (Luke §5).
-    const cachesPromise = ensureCaches(ai, models, specHash);
+    // No-op for non-Gemini providers.
+    const cachesPromise = ensureCaches(provider, models, specHash);
 
     const baseDeps = (cacheHandles: {
       fastCache: string | null;
       genCache: string | null;
     }): GenAIDeps => ({
-      ai,
+      provider,
       models,
       specHash: specHash ?? "",
       budget,
