@@ -254,7 +254,7 @@ export async function generateQuestions(
       userText: buildQuestionsUser(blueprintJson, input.specExcerpt),
       cachedContent: deps.caches.fastCache,
       temperature: 0.4,
-      maxOutputTokens: 1500,
+      maxOutputTokens: 4000,
       geminiSchema: QuestionSetSchema as Schema,
       zod: QuestionSetZ,
     },

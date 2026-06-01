@@ -57,9 +57,9 @@ export class GeminiProvider implements LLMProvider {
       abortSignal: opts.signal,
     };
     if (schema) config.responseSchema = schema;
-    if (typeof opts.thinkingBudget === "number") {
-      config.thinkingConfig = { thinkingBudget: opts.thinkingBudget };
-    }
+    config.thinkingConfig = {
+      thinkingBudget: typeof opts.thinkingBudget === "number" ? opts.thinkingBudget : 0,
+    };
     if (opts.cachedContent) {
       config.cachedContent = opts.cachedContent;
     } else {
@@ -90,9 +90,9 @@ export class GeminiProvider implements LLMProvider {
       safetySettings: SAFETY_OFF,
       abortSignal: opts.signal,
     };
-    if (typeof opts.thinkingBudget === "number") {
-      config.thinkingConfig = { thinkingBudget: opts.thinkingBudget };
-    }
+    config.thinkingConfig = {
+      thinkingBudget: typeof opts.thinkingBudget === "number" ? opts.thinkingBudget : 0,
+    };
     if (opts.cachedContent) {
       config.cachedContent = opts.cachedContent;
     } else {
