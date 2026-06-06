@@ -280,6 +280,7 @@ export async function foldAnswers(
       userText: buildFoldUser(blueprintJson, qaJson),
       temperature: 0.2,
       maxOutputTokens: 8000,
+      thinkingBudget: 0,
       geminiSchema: BlueprintIRSchema as Schema,
       zod: BlueprintZ,
     },
